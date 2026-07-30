@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<title>Segment Player</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+    background: #0d0d0f; color: #eee; display: flex; min-height: 100vh;
+  }
+  #main { flex: 1; display: flex; flex-direction: column; align-items: center; padding: 16px; }
+  h1 { font-size: 18px; font-weight: 600; margin: 4px 0 12px; }
+  #stage {
+    position: relative; width: 100%; max-width: 960px; aspect-ratio: 16 / 9;
+    background: #000; border-radius: 10px; overflow: hidden;
+  }
+  #player { position: absolute; inset: 0; width: 100%; height: 100%; }
+  /* Black overlay used for the visual fade between segments */
+  #fade {
+    position: absolute; inset: 0; background: #000; opacity: 0;
+    transition: opacity var(--fade, 700ms) ease; pointer-events: none;
+  }
+  /* Big start button (needed so the browser will allow autoplay with sound) */
+  #startBtn {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    background: rgba(0,0,0,0.65); cursor: pointer; z-index: 5;
+  }
+  #startBtn span {
+    background: #e11d48; color: #fff; padding: 14px 26px; border-radius: 999px;
+    font-size: 17px; font-weight: 600;
+  }
+  #segLabel { margin-top: 12px; font-size: 15px; color: #cbd5e1; min-height: 20px; text-align: center; }
+  #controls { margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+  button.ctl {
+    background: #1f2937; color: #eee; border: 1px solid #374151; border-radius: 8px;
+    padding: 8px 14px; font-size: 14px; cursor: pointer;
+  }
+  button.ctl:hover { background: #374151; }
+  #list { width: 260px; border-left: 1px solid #1f2937; padding: 16px 12px; overflow-y: auto; max-height: 100vh; }
+  #list h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: #94a3b8; margin: 0 0 10px; }
+  .item {
+    padding: 8px 10px; border-radius: 8px; cursor: pointer; font-size: 14px;
+    display: flex; justify-content: space-between; gap: 8px; margin-bottom: 4px;
+  }
+  .item:hover { background: #1f2937; }
+  .item.active { background: #312e81; color: #fff; }
+  .item .t { color: #94a3b8; font-variant-numeric: tabular-nums; font-size: 12px; }
+  @media (max-width: 720px) { body { flex-direction: column; } #list { width: 100%; border-left: none; border-top: 1px solid #1f2937; } }
+</style>
+</head>
+<body>
+  <div id="main">
+    <h1 id="title">Segment Player</h1>
+    <div id="stage">
+      <div id="player"></div>
+      <div id="fade"></div>
+      <div id="startBtn"><span>&#9654; Play segments</span></div>
+    </div>
+    <div id="segLabel"></div>
+    <div id="controls">
+      <button class="ctl" id="prev">&#9664; Prev</button>
+      <button class="ctl" id="next">Next &#9654;</button>
+      <button class="ctl" id="replay">Replay segment</button>
+      <button class="ctl" id="restart">Restart all</button>
+    </div>
+  </div>
+  <div id="list">
+    <h2>Segments</h2>
+    <div id="items"></div>
+  </div>
+
+<script>
+/* ============================================================
+   CONFIG  —  edit these, then save.
+   ============================================================ */
+
+// The YouTube video ID: the part after "v=" in a watch URL.
+const VIDEO_ID = "6_FdtJFCLPo";
+
+// Title shown at the top.
+const PLAYLIST_TITLE = "My segments";
+
+// Your segments, in order. Each needs a start and an end.
+// Times accept "h:mm:ss", "mm:ss", or plain seconds. Label is optional.
+const SEGMENTS = [
+  { start: "1:28:18", end: "1:30:50", label: "Segment 1" },
+  { start: "2:20:37", end: "2:20:48", label: "Segment 2" },
+];
+
+// Fade length, in milliseconds. Applies to BOTH the black overlay and the volume.
+const FADE_MS = 700;
+
+// Peak volume (0-100) the audio ramps up to inside each segment.
+const MAX_VOLUME = 100;
+
+/* ============================================================
+   No need to edit below this line.
+   ============================================================ */
+
+function parseTime(t) {
+  if (typeof t === "number") return t;
+  const parts = String(t).trim().split(":").map(Number);
+  if (parts.some(isNaN)) return 0;
+  return parts.reduce((acc, v) => acc * 60 + v, 0);
+}
+function fmt(sec) {
+  sec = Math.max(0, Math.round(sec));
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  const mm = h ? String(m).padStart(2, "0") : m;
+  return (h ? h + ":" : "") + mm + ":" + String(s).padStart(2, "0");
+}
+
+const segs = SEGMENTS.map(s => ({
+  start: parseTime(s.start),
+  end: parseTime(s.end),
+  label: s.label || ""
+}));
+
+document.documentElement.style.setProperty("--fade", FADE_MS + "ms");
+document.getElementById("title").textContent = PLAYLIST_TITLE;
+
+const fadeEl = document.getElementById("fade");
+const segLabelEl = document.getElementById("segLabel");
+const itemsEl = document.getElementById("items");
+
+let player, current = 0, tick = null, started = false, advancing = false, volTimer = null;
+
+// Build the sidebar list
+segs.forEach((s, i) => {
+  const el = document.createElement("div");
+  el.className = "item";
+  el.dataset.i = i;
+  el.innerHTML = '<span>' + (i + 1) + '. ' + (s.label || 'Segment ' + (i + 1)) +
+                 '</span><span class="t">' + fmt(s.start) + '</span>';
+  el.addEventListener("click", () => { if (started) playSegment(i); });
+  itemsEl.appendChild(el);
+});
+
+function highlight(i) {
+  document.querySelectorAll(".item").forEach(el =>
+    el.classList.toggle("active", Number(el.dataset.i) === i));
+  const s = segs[i];
+  segLabelEl.textContent = (i + 1) + " / " + segs.length +
+    (s.label ? "  —  " + s.label : "") + "   (" + fmt(s.start) + " – " + fmt(s.end) + ")";
+}
+
+function fadeToBlack() { fadeEl.style.opacity = "1"; }
+function fadeToClear() { fadeEl.style.opacity = "0"; }
+
+// Smoothly ramp the player volume from -> to over ms milliseconds.
+function rampVolume(from, to, ms) {
+  if (!player || typeof player.setVolume !== "function") return;
+  if (volTimer) { clearInterval(volTimer); volTimer = null; }
+  const steps = Math.max(1, Math.round(ms / 40));
+  let i = 0;
+  player.setVolume(Math.max(0, Math.min(100, from)));
+  volTimer = setInterval(() => {
+    i++;
+    const v = from + (to - from) * (i / steps);
+    player.setVolume(Math.max(0, Math.min(100, v)));
+    if (i >= steps) { clearInterval(volTimer); volTimer = null; }
+  }, 40);
+}
+
+function playSegment(i) {
+  if (i < 0 || i >= segs.length) return;
+  current = i;
+  advancing = false;
+  highlight(i);
+  fadeToBlack();
+  if (player && typeof player.setVolume === "function") player.setVolume(0);
+  // Seek while black + silent, then reveal picture and ramp audio up.
+  setTimeout(() => {
+    player.seekTo(segs[i].start, true);
+    player.playVideo();
+    setTimeout(() => { fadeToClear(); rampVolume(0, MAX_VOLUME, FADE_MS); }, 120);
+  }, FADE_MS);
+}
+
+function monitor() {
+  if (!player || typeof player.getCurrentTime !== "function") return;
+  const t = player.getCurrentTime();
+  const seg = segs[current];
+  if (!seg) return;
+  // Begin fading picture + audio a touch before the end so they land on the boundary.
+  if (!advancing && t >= seg.end - FADE_MS / 1000) {
+    advancing = true;
+    fadeToBlack();
+    rampVolume(MAX_VOLUME, 0, FADE_MS);
+  }
+  if (t >= seg.end) {
+    if (current + 1 < segs.length) {
+      playSegment(current + 1);
+    } else {
+      player.pauseVideo();
+      segLabelEl.textContent = "Done. Press Restart all to watch again.";
+    }
+  }
+}
+
+// ---- YouTube IFrame API bootstrap ----
+function onYouTubeIframeAPIReady() {
+  player = new YT.Player("player", {
+    videoId: VIDEO_ID,
+    playerVars: { controls: 1, rel: 0, modestbranding: 1, playsinline: 1 },
+    events: { onReady: () => {} }
+  });
+}
+(function loadAPI() {
+  const tag = document.createElement("script");
+  tag.src = "https://www.youtube.com/iframe_api";
+  document.head.appendChild(tag);
+})();
+
+// ---- Controls ----
+document.getElementById("startBtn").addEventListener("click", () => {
+  if (!player) return;
+  started = true;
+  document.getElementById("startBtn").style.display = "none";
+  if (tick) clearInterval(tick);
+  tick = setInterval(monitor, 120);
+  playSegment(0);
+});
+document.getElementById("next").addEventListener("click", () => started && playSegment(current + 1));
+document.getElementById("prev").addEventListener("click", () => started && playSegment(current - 1));
+document.getElementById("replay").addEventListener("click", () => started && playSegment(current));
+document.getElementById("restart").addEventListener("click", () => started && playSegment(0));
+
+highlight(0);
+</script>
+</body>
+</html>
