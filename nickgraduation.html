@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="strict-origin-when-cross-origin">
-<title>Segment Player</title>
+<title>Nick's Graduation</title>
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
@@ -22,7 +22,7 @@
   /* Black overlay used for the visual fade between segments */
   #fade {
     position: absolute; inset: 0; background: #000; opacity: 0;
-    transition: opacity var(--fade, 700ms) ease; pointer-events: none;
+    transition: opacity 700ms ease; pointer-events: none;
   }
   /* Big start button (needed so the browser will allow autoplay with sound) */
   #startBtn {
@@ -40,6 +40,9 @@
     padding: 8px 14px; font-size: 14px; cursor: pointer;
   }
   button.ctl:hover { background: #374151; }
+  #links { margin-top: 22px; padding-top: 16px; border-top: 1px solid #1f2937; width: 100%; max-width: 960px; text-align: center; }
+  #links a { color: #93c5fd; text-decoration: none; margin: 0 12px; font-size: 14px; }
+  #links a:hover { text-decoration: underline; }
   #list { width: 260px; border-left: 1px solid #1f2937; padding: 16px 12px; overflow-y: auto; max-height: 100vh; }
   #list h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: #94a3b8; margin: 0 0 10px; }
   .item {
@@ -54,7 +57,7 @@
 </head>
 <body>
   <div id="main">
-    <h1 id="title">Segment Player</h1>
+    <h1 id="title">Nick's Graduation</h1>
     <div id="stage">
       <div id="player"></div>
       <div id="fade"></div>
@@ -66,6 +69,10 @@
       <button class="ctl" id="next">Next &#9654;</button>
       <button class="ctl" id="replay">Replay segment</button>
       <button class="ctl" id="restart">Restart all</button>
+    </div>
+    <div id="links">
+      <a href="https://www.youtube.com/watch?v=6_FdtJFCLPo" target="_blank" rel="noopener">Full YouTube video</a>
+      <a href="https://video.ibm.com/channel/6rnaS4ez9DU" target="_blank" rel="noopener">Johns Hopkins Whiting School of Engineering</a>
     </div>
   </div>
   <div id="list">
@@ -82,16 +89,27 @@
 const VIDEO_ID = "6_FdtJFCLPo";
 
 // Title shown at the top.
-const PLAYLIST_TITLE = "My segments";
+const PLAYLIST_TITLE = "Nick's Graduation";
 
 // Your segments, in order. Each needs a start and an end.
 // Times accept "h:mm:ss", "mm:ss", or plain seconds. Label is optional.
+// Add  fade: false  to a segment that already has its own fade baked in,
+// so it plays with a clean cut instead of a second fade on top.
 const SEGMENTS = [
-  { start: "1:28:18", end: "1:30:50", label: "Segment 1" },
-  { start: "2:20:37", end: "2:20:48", label: "Segment 2" },
+  { start: "0:00",    end: "0:42",    label: "Processional" },
+  { start: "27:45",   end: "28:31",   label: "Welcome" },
+  { start: "1:28:18", end: "1:28:38", label: "Electrical and Computer Engineering" },
+  { start: "1:30:48", end: "1:30:58", label: "Nick on Stage" },
+  { start: "2:10:20", end: "2:10:40", label: "Closing" },
+  { start: "1:48:56", end: "1:48:57", label: "Spirit of an Engineer" },
+  { start: "2:16:09", end: "2:16:42", label: "Recessional" },
+  { start: "2:20:37", end: "2:20:48", label: "Nick in Seattle",     fade: false },
+  { start: "2:21:30", end: "2:21:32", label: "Family at Christmas", fade: false },
+  { start: "2:31:39", end: "2:31:41", label: "Nick",                fade: false },
 ];
 
-// Fade length, in milliseconds. Applies to BOTH the black overlay and the volume.
+// Maximum fade length, in milliseconds (both black overlay and volume).
+// For very short clips the fade shrinks automatically so the moment still shows.
 const FADE_MS = 700;
 
 // Peak volume (0-100) the audio ramps up to inside each segment.
@@ -117,17 +135,27 @@ function fmt(sec) {
 const segs = SEGMENTS.map(s => ({
   start: parseTime(s.start),
   end: parseTime(s.end),
-  label: s.label || ""
+  label: s.label || "",
+  fade: s.fade !== false
 }));
 
-document.documentElement.style.setProperty("--fade", FADE_MS + "ms");
+// Brief black cover used to hide the seek/scrub when jumping between clips.
+const SEEK_COVER_MS = 250;
+
+// Fade duration for a given segment: shrink it for short clips so a
+// 1-2 second moment isn't entirely eaten by the fade in and out.
+function fadeFor(i) {
+  const dur = Math.max(0, segs[i].end - segs[i].start) * 1000;
+  return Math.max(150, Math.min(FADE_MS, dur * 0.35));
+}
+
 document.getElementById("title").textContent = PLAYLIST_TITLE;
 
 const fadeEl = document.getElementById("fade");
 const segLabelEl = document.getElementById("segLabel");
 const itemsEl = document.getElementById("items");
 
-let player, current = 0, tick = null, started = false, advancing = false, volTimer = null;
+let player, current = 0, tick = null, started = false, advancing = false, volTimer = null, curFade = FADE_MS;
 
 // Build the sidebar list
 segs.forEach((s, i) => {
@@ -170,15 +198,30 @@ function playSegment(i) {
   if (i < 0 || i >= segs.length) return;
   current = i;
   advancing = false;
+  const seg = segs[i];
+  curFade = seg.fade ? fadeFor(i) : 0;   // monitor() uses this for the fade-out
   highlight(i);
+  // Snap to black instantly to hide the coming seek, and mute.
+  fadeEl.style.transitionDuration = "0ms";
   fadeToBlack();
   if (player && typeof player.setVolume === "function") player.setVolume(0);
-  // Seek while black + silent, then reveal picture and ramp audio up.
   setTimeout(() => {
-    player.seekTo(segs[i].start, true);
+    player.seekTo(seg.start, true);
     player.playVideo();
-    setTimeout(() => { fadeToClear(); rampVolume(0, MAX_VOLUME, FADE_MS); }, 120);
-  }, FADE_MS);
+    setTimeout(() => {
+      if (seg.fade) {
+        // Reveal with a gradual fade + audio ramp.
+        fadeEl.style.transitionDuration = curFade + "ms";
+        fadeToClear();
+        rampVolume(0, MAX_VOLUME, curFade);
+      } else {
+        // Clean cut: reveal instantly at full volume so the clip's own fade shows.
+        fadeEl.style.transitionDuration = "0ms";
+        fadeToClear();
+        player.setVolume(MAX_VOLUME);
+      }
+    }, 120);
+  }, SEEK_COVER_MS);
 }
 
 function monitor() {
@@ -186,11 +229,13 @@ function monitor() {
   const t = player.getCurrentTime();
   const seg = segs[current];
   if (!seg) return;
-  // Begin fading picture + audio a touch before the end so they land on the boundary.
-  if (!advancing && t >= seg.end - FADE_MS / 1000) {
+  // Begin fading picture + audio a touch before the end so they land on the
+  // boundary. Skipped for clean-cut clips that carry their own fade.
+  if (!advancing && seg.fade && t >= seg.end - curFade / 1000) {
     advancing = true;
+    fadeEl.style.transitionDuration = curFade + "ms";
     fadeToBlack();
-    rampVolume(MAX_VOLUME, 0, FADE_MS);
+    rampVolume(MAX_VOLUME, 0, curFade);
   }
   if (t >= seg.end) {
     if (current + 1 < segs.length) {
