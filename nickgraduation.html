@@ -30,6 +30,15 @@
     object-fit: contain; background: #000; opacity: 0; z-index: 3;
     transition: opacity 600ms ease; pointer-events: none;
   }
+  /* Caption shown under the end photos */
+  #caption {
+    position: absolute; left: 0; right: 0; bottom: 0; z-index: 4; opacity: 0;
+    padding: 40px 20px 18px; text-align: center; pointer-events: none;
+    color: #fff; font-size: clamp(15px, 2.6vw, 22px); font-weight: 600;
+    text-shadow: 0 1px 4px rgba(0,0,0,0.9);
+    background: linear-gradient(to top, rgba(0,0,0,0.75), rgba(0,0,0,0));
+    transition: opacity 600ms ease;
+  }
   /* Closing frame with the two links */
   #endcard {
     position: absolute; inset: 0; z-index: 4; opacity: 0; background: #0d1b3a;
@@ -83,10 +92,11 @@
       <div id="player"></div>
       <div id="fade"></div>
       <img id="photo" alt="">
+      <div id="caption"></div>
       <div id="endcard">
         <div class="ec-title">Nick's Graduation</div>
         <div class="ec-links">
-          <a href="https://www.youtube.com/watch?v=6_FdtJFCLPo" target="_blank" rel="noopener">Full YouTube video</a>
+          <a href="https://www.youtube.com/watch?v=6_FdtJFCLPo&t=0s" target="_blank" rel="noopener">Full YouTube video</a>
           <a href="https://video.ibm.com/channel/6rnaS4ez9DU" target="_blank" rel="noopener">Johns Hopkins Whiting School of Engineering</a>
         </div>
       </div>
@@ -133,6 +143,19 @@ const FADE_MS       = 700;  // fade length for video clips (ms)
 const PHOTO_FADE_MS = 600;  // fade length between photos (ms)
 const MAX_VOLUME    = 100;  // peak volume the audio ramps up to (0-100)
 
+// On-screen captions for the 8 photos (Nick 1 .. Nick 8), in order.
+// Leave an entry as "" for no caption on that photo.
+const PHOTO_LABELS = [
+  "Shaking Hands",
+  "Shaking Hands",
+  "Shaking Hands",
+  "On top floor of AMLI Arc apartment building",
+  "At REI park",
+  "At Gas Works Park",
+  "Christmas with Family",
+  "Nick - Great Job!"
+];
+
 /* ============================================================
    IMAGE DATA — auto-generated, do not edit by hand.
    ============================================================ */
@@ -158,7 +181,7 @@ function fmt(sec) {
 // Unified playlist: video clips first, then photos.
 const items = [];
 SEGMENTS.forEach(s => items.push({ type: "video", start: parseTime(s.start), end: parseTime(s.end), label: s.label }));
-PHOTOS.forEach((src, i) => items.push({ type: "photo", src: src, label: "Photo " + (i + 1) }));
+PHOTOS.forEach((src, i) => items.push({ type: "photo", src: src, label: "Photo " + (i + 1), caption: PHOTO_LABELS[i] || "" }));
 items.push({ type: "end", label: "Closing links" });
 const FIRST_PHOTO = SEGMENTS.length;
 const END_INDEX = items.length - 1;
@@ -174,6 +197,7 @@ document.getElementById("title").textContent = PLAYLIST_TITLE;
 
 const fadeEl = document.getElementById("fade");
 const photoEl = document.getElementById("photo");
+const captionEl = document.getElementById("caption");
 const endcardEl = document.getElementById("endcard");
 const segLabelEl = document.getElementById("segLabel");
 const itemsEl = document.getElementById("items");
@@ -241,6 +265,9 @@ function hideEndcard() {
   endcardEl.style.opacity = "0";
   endcardEl.style.pointerEvents = "none";
 }
+function hideCaption() {
+  captionEl.style.opacity = "0";
+}
 
 function playVideoItem(i) {
   advancing = false;
@@ -249,6 +276,7 @@ function playVideoItem(i) {
   curFade = fadeFor(i);
   highlight(i);
   hideEndcard();
+  hideCaption();
   // hide any photo, cover the player with black while we seek
   photoVisible = false;
   photoEl.style.transitionDuration = "0ms";
@@ -280,7 +308,13 @@ function playPhotoItem(i) {
 
   const swapIn = () => {
     photoEl.onload = () => {
-      requestAnimationFrame(() => { photoEl.style.opacity = "1"; photoVisible = true; });
+      requestAnimationFrame(() => {
+        photoEl.style.opacity = "1";
+        photoVisible = true;
+        captionEl.textContent = it.caption;
+        captionEl.style.transitionDuration = PHOTO_FADE_MS + "ms";
+        captionEl.style.opacity = it.caption ? "1" : "0";
+      });
     };
     photoEl.src = it.src;
     // schedule auto-advance
@@ -296,8 +330,9 @@ function playPhotoItem(i) {
   };
 
   if (photoVisible) {
-    // fade the current photo out first, then bring in the next
+    // fade the current photo + caption out first, then bring in the next
     photoEl.style.opacity = "0";
+    captionEl.style.opacity = "0";
     photoVisible = false;
     setTimeout(swapIn, PHOTO_FADE_MS);
   } else {
@@ -307,6 +342,7 @@ function playPhotoItem(i) {
 
 function playEndItem(i) {
   highlight(i);
+  hideCaption();
   if (player && typeof player.pauseVideo === "function") player.pauseVideo();
   if (player && typeof player.setVolume === "function") player.setVolume(0);
   // fade the last photo out and the black cover in behind the card
